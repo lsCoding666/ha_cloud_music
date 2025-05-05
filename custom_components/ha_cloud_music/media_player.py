@@ -1,4 +1,6 @@
 import logging, time, datetime
+import asyncio
+
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -44,6 +46,8 @@ from homeassistant.const import (
 )
 
 from .manifest import manifest
+from .lyrics.parser import LyricParser
+
 DOMAIN = manifest.domain
 
 _LOGGER = logging.getLogger(__name__)
@@ -53,7 +57,7 @@ SUPPORT_FEATURES = SUPPORT_VOLUME_STEP | SUPPORT_VOLUME_MUTE | SUPPORT_VOLUME_SE
     MediaPlayerEntityFeature.BROWSE_MEDIA | SUPPORT_SEEK | SUPPORT_CLEAR_PLAYLIST | SUPPORT_SHUFFLE_SET | SUPPORT_REPEAT_SET
 
 # 定时器时间
-TIME_BETWEEN_UPDATES = datetime.timedelta(seconds=2)
+TIME_BETWEEN_UPDATES = datetime.timedelta(seconds=1)
 UNSUB_INTERVAL = None
 
 async def async_setup_entry(
@@ -102,42 +106,96 @@ class CloudMusicMediaPlayer(MediaPlayerEntity):
         self.cloud_music = hass.data['cloud_music']
         self.before_state = None
         self.current_state = None
+        self._last_seek_time = None
+        
+        # 歌词相关
+        self.lyric_parser = LyricParser()
+        self._attr_lyrics = None
+        self._attr_current_lyric = None
+        self._last_lyric_update = None
 
     def interval(self, now):
+        # _LOGGER.warning("播放状态：%s", self._attr_state)
+        
         # 暂停时不更新
-        if self._attr_state == STATE_PAUSED:
+        if self._attr_state != STATE_PLAYING:
             return
-
+    
+        # 获取当前时间
+        new_updated_at = datetime.datetime.now()
+        
+        # 如果是第一次调用或者需要重置计时
+        if not hasattr(self, '_last_position_update') or self._last_position_update is None:
+            self._last_position_update = new_updated_at
+            self._attr_media_position = 0
+        else:
+            self._attr_media_position += 1  # 增加整数秒
+            self._last_position_update = new_updated_at
+            self._attr_media_position_updated_at = datetime.datetime.now(datetime.timezone.utc)
+            
+            # 更新歌词
+            if self._attr_lyrics:
+                current_lyric = self.lyric_parser.get_current_lyric(self._attr_media_position)
+                if current_lyric != self._attr_current_lyric:
+                    _LOGGER.warning("更新歌词 - 位置: %d, 歌词: %s", self._attr_media_position, current_lyric)
+                    self._attr_current_lyric = current_lyric
+                    self._attributes['current_lyric'] = current_lyric
+                    
+                    # 获取下一句歌词
+                    next_lyric = self.lyric_parser.get_next_lyric()
+                    self._attributes['next_lyric'] = next_lyric
+                    
+                    self.hass.loop.call_soon_threadsafe(self.async_write_ha_state)
+            
+        self.hass.loop.call_soon_threadsafe(self.async_write_ha_state)
+        # 更新其他属性（从DLNA设备获取）
         media_player = self.media_player
         if media_player is not None:
             attrs = media_player.attributes
-            self._attr_media_position = attrs.get('media_position', 0)
             self._attr_media_duration = attrs.get('media_duration', 0)
-            self._attr_media_position_updated_at = datetime.datetime.now()
+
             # 判断是否下一曲
             if self.before_state is not None:
                 # 判断音乐总时长
-                if self.before_state['media_duration'] > 0 and self.before_state['media_duration'] - self.before_state['media_duration'] <= 5:
-                    # 判断源音乐播放器状态
-                    if self.before_state['state'] == STATE_PLAYING and self.current_state == STATE_IDLE:
-                        self.hass.create_task(self.async_media_next_track())
+                if self.before_state['media_duration'] > 0:
+                    delta = self._attr_media_duration - self._attr_media_position
+                    # _LOGGER.warning("差值：%s", delta)
+                    if delta <= 1 and self._attr_media_duration > 1 and delta >= 0:
+                        _LOGGER.warning("小于1 切歌")
+                        self._attr_state = STATE_PAUSED
                         self.before_state = None
+                        self.hass.loop.call_soon_threadsafe(
+                            lambda: asyncio.create_task(self.async_media_next_track())
+                        )
                         return
-
-                # 源播放器空闲 & 当前正在播放
-                if self.before_state['media_duration'] == 0 and self.before_state['media_position'] == 0 and self.current_state == STATE_IDLE \
-                    and self._attr_media_duration == 0 and self._attr_media_position == 0 and self._attr_state == STATE_PLAYING:
-                        self.hass.create_task(self.async_media_next_track())
-                        self.before_state = None
-                        return
-
-            self.before_state = {
-                'media_position': int(self._attr_media_position),
-                'media_duration': int(self._attr_media_duration),
-                'state': self.current_state
-            }
-            self.current_state = media_player.state
-
+    
+                # if (self.before_state['media_duration'] == 0 and 
+                #     self.before_state['media_position'] == 0 and 
+                #     self.current_state == STATE_PLAYING and
+                #     self._attr_media_duration == 0 and 
+                #     self._attr_media_position == 0 and 
+                #     self._attr_state == STATE_PLAYING):
+                #     time.sleep(10)
+                #     if (self.before_state['media_duration'] == 0 and 
+                #         self.before_state['media_position'] == 0 and 
+                #         self.current_state == STATE_PLAYING and
+                #         self._attr_media_duration == 0 and 
+                #         self._attr_media_position == 0 and 
+                #         self._attr_state == STATE_PLAYING):
+                #         self.hass.loop.call_soon_threadsafe(
+                #             lambda: asyncio.create_task(self.async_media_next_track())
+                #         )
+                #         self.before_state = None
+                #         return
+    
+        # 更新状态记录
+        self.before_state = {
+            'media_position': int(self._attr_media_position),
+            'media_duration': int(self._attr_media_duration),
+            'state': self.current_state
+        }
+        self.current_state = media_player.state if media_player is not None else self._attr_state
+    
         if hasattr(self, 'playlist'):
             music_info = self.playlist[self.playindex]
             self._attr_app_name = music_info.singer
@@ -145,6 +203,7 @@ class CloudMusicMediaPlayer(MediaPlayerEntity):
             self._attr_media_album_name = music_info.album
             self._attr_media_title = music_info.song
             self._attr_media_artist = music_info.singer
+        # self.hass.loop.call_soon_threadsafe(lambda: asyncio.create_task(self.async_write_ha_state()))
 
     @property
     def media_player(self):
@@ -185,8 +244,9 @@ class CloudMusicMediaPlayer(MediaPlayerEntity):
         await self.async_call('volume_set', { 'volume_level': volume })
 
     async def async_play_media(self, media_type, media_id, **kwargs):
-
         self._attr_state = STATE_PAUSED
+        self._attr_media_position = 0  # 重置进度
+        self._attr_media_position_updated_at = datetime.datetime.now(datetime.timezone.utc)
         
         media_content_id = media_id
         result = await self.cloud_music.async_play_media(self, self.cloud_music, media_id)
@@ -202,6 +262,22 @@ class CloudMusicMediaPlayer(MediaPlayerEntity):
                 media_content_id = self.playlist[self.playindex].url
 
         self._attr_media_content_id = media_content_id
+        
+        # 获取并解析歌词
+        if hasattr(self, 'playlist'):
+            music_info = self.playlist[self.playindex]
+            _LOGGER.warning("正在获取歌词 - 歌曲: %s, 歌手: %s", music_info.song, music_info.singer)
+            lyrics = await self.lyric_parser.fetch_lyrics(music_info.song, music_info.singer)
+            if lyrics:
+                _LOGGER.warning("成功获取歌词，长度: %d", len(lyrics))
+                self.lyric_parser.parse_lrc(lyrics)
+                self._attr_lyrics = lyrics
+                self._attr_current_lyric = None
+                self._attributes['lyrics'] = lyrics
+                self._attributes['current_lyric'] = None
+            else:
+                _LOGGER.warning("未能获取到歌词")
+
         await self.async_call('play_media', {
             'media_content_id': media_content_id,
             'media_content_type': 'music'
@@ -211,8 +287,19 @@ class CloudMusicMediaPlayer(MediaPlayerEntity):
         self.before_state = None
 
     async def async_media_play(self):
-        self._attr_state = STATE_PLAYING
+        # 强制暂停一次
+        await self.async_call('media_pause')
+        await asyncio.sleep(0.1)
+         # 强制暂停一次
         await self.async_call('media_play')
+        await asyncio.sleep(0.1)
+         # 强制暂停一次
+        await self.async_call('media_pause')
+        await asyncio.sleep(0.1)
+        
+        # 然后再播放
+        await self.async_call('media_play')
+        self._attr_state = STATE_PLAYING
 
     async def async_media_pause(self):
         self._attr_state = STATE_PAUSED
@@ -227,13 +314,27 @@ class CloudMusicMediaPlayer(MediaPlayerEntity):
     async def async_media_next_track(self):
         self._attr_state = STATE_PAUSED
         await self.cloud_music.async_media_next_track(self, self._attr_shuffle)
+        self._attr_media_position = 0
+        self._attr_media_position_updated_at = datetime.datetime.now()
 
     async def async_media_previous_track(self):
         self._attr_state = STATE_PAUSED
         await self.cloud_music.async_media_previous_track(self, self._attr_shuffle)
+        self._attr_media_position = 0
+        self._attr_media_position_updated_at = datetime.datetime.now()
 
     async def async_media_seek(self, position):
         await self.async_call('media_seek', { 'seek_position': position })
+        # 更新进度状态
+        self._attr_media_position = position
+        self._attr_media_position_updated_at = datetime.datetime.now()
+        self._last_seek_time = datetime.datetime.now()
+        # 通知前端更新 UI
+        self.async_write_ha_state()
+        # 立即执行一次 interval，防止延迟或卡住不切歌
+        self._attr_state = STATE_PLAYING
+        self.interval(datetime.datetime.now())
+        
 
     async def async_media_stop(self):
         await self.async_call('media_stop')

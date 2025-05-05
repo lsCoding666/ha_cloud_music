@@ -1,0 +1,15 @@
+{
+    "name": "云音乐",
+    "render_readme": true,
+    "domains": ["media_player"],
+    "homeassistant": "2024.1.0",
+    "iot_class": "Cloud Polling",
+    "zip_release": true,
+    "filename": "ha_cloud_music.zip",
+    "hacs": "1.0.0",
+    "content_in_root": false,
+    "persistent_directory": "custom_components/ha_cloud_music",
+    "frontend_extra_module_url": [
+        "/ha_cloud_music/lyrics-card"
+    ]
+} 

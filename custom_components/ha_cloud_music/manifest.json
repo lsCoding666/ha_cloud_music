@@ -6,7 +6,9 @@
     "documentation": "https://github.com/shaonianzhentan/ha_cloud_music",
     "requirements": [
         "beautifulsoup4>=4.11.1",
-        "lxml>=4.9.1"
+        "lxml>=4.9.1",
+        "aiohttp>=3.8.0",
+        "pycryptodome>=3.15.0"
     ],
     "codeowners": [
         "@shaonianzhentan"

@@ -1,0 +1,11 @@
+{
+    "card": {
+        "lyrics": {
+            "name": "Lyrics Card",
+            "description": "A card to display synchronized lyrics for music players",
+            "editor": {
+                "select_player": "Select media player"
+            }
+        }
+    }
+} 

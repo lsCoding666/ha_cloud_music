@@ -1,0 +1,11 @@
+{
+    "card": {
+        "lyrics": {
+            "name": "歌词卡片",
+            "description": "显示音乐播放器同步歌词的卡片",
+            "editor": {
+                "select_player": "选择媒体播放器"
+            }
+        }
+    }
+} 
